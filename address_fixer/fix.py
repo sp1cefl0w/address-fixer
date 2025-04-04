@@ -3,6 +3,14 @@ from typing import List, Dict, Tuple
 import os
 import re
 
+# This assumes your raw .csv file is in root.
+_root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_csv_filename = 'DQF Locations_ALL REGIONS_Waste Connections Apr 2 2025.csv'
+_csv_path = os.path.join(_root_dir, _csv_filename)
+
+# You can add to this if you find more 'address line 2' indicators in your dataset.
+_unit_indicators = ['STE', 'SUITE', 'APT', 'UNIT', '#', 'FL', 'FLOOR']
+
 def clean_address(addr: str) -> str:
     """Clean and standardize address string.
     
@@ -25,11 +33,10 @@ def extract_address_parts(street_part: str) -> Tuple[str, str]:
     Returns:
         Tuple[str, str]: Tuple containing (address_line_1, address_line_2).
     """
-    unit_indicators = ['STE', 'SUITE', 'APT', 'UNIT', '#', 'FL', 'FLOOR']
     words = street_part.upper().split()
     
     for i, word in enumerate(words):
-        if word in unit_indicators:
+        if word in _unit_indicators:
             return ' '.join(words[:i]), ' '.join(words[i:])
     return street_part, ''
 
@@ -58,11 +65,10 @@ def extract_unit(text: str) -> Tuple[str, str]:
     Returns:
         Tuple[str, str]: Tuple containing (main_address, unit_info).
     """
-    unit_indicators = ['STE', 'SUITE', 'APT', 'UNIT', '#', 'FL', 'FLOOR']
     words = text.upper().split()
     
     for i, word in enumerate(words):
-        if word in unit_indicators:
+        if word in _unit_indicators:
             return ' '.join(words[:i]), ' '.join(words[i:])
     return text, ''
 
@@ -75,13 +81,12 @@ def validate_and_fix_addresses(valid_addresses: List[Dict]) -> List[Dict]:
     Returns:
         List[Dict]: List of validated and fixed address dictionaries.
     """
-    unit_indicators = ['STE', 'SUITE', 'APT', 'UNIT', '#', 'FL', 'FLOOR']
     
     for addr in valid_addresses:
         # Fix suite/city split
         if addr['address_line_2']:
             words = addr['address_line_2'].upper().split()
-            if words[0] in unit_indicators and len(words) > 1:
+            if words[0] in _unit_indicators and len(words) > 1:
                 unit_end = 1
                 if unit_end < len(words) and words[unit_end][0].isdigit():
                     unit_end += 1
@@ -113,7 +118,6 @@ def parse_addresses(addresses: List[str]) -> Tuple[List[Dict], List[Dict]]:
     """
     valid_addresses = []
     invalid_addresses = []
-    unit_indicators = ['STE', 'SUITE', 'APT', 'UNIT', '#', 'FL', 'FLOOR']
     
     for idx, address in enumerate(addresses):
         if not address or not address.strip():
@@ -160,7 +164,7 @@ def parse_addresses(addresses: List[str]) -> Tuple[List[Dict], List[Dict]]:
             addr_line2 = ''
             words = street.upper().split()
             for i, word in enumerate(words):
-                if word in unit_indicators:
+                if word in _unit_indicators:
                     addr_line1 = ' '.join(words[:i])
                     addr_line2 = ' '.join(words[i:])
                     break
@@ -291,14 +295,11 @@ def main():
         - invalid_addresses.csv: Addresses that could not be parsed
     """
     # Get the root directory path
-    root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    csv_path = os.path.join(root_dir, 'DQF Locations_ALL REGIONS_Waste Connections Apr 2 2025.csv')
     
-    unit_indicators = ['STE', 'SUITE', 'APT', 'UNIT', '#', 'FL', 'FLOOR']
     
     try:
         # Read addresses from CSV file
-        df = pd.read_csv(csv_path, dtype={'Location Address': str})
+        df = pd.read_csv(_csv_path, dtype={'Location Address': str})
         if 'Location Address' not in df.columns:
             print("Error: CSV file must contain a 'Location Address' column")
             return
@@ -322,7 +323,7 @@ def main():
         for record in records:
             if record['address_line_2']:
                 words = record['address_line_2'].upper().split()
-                if words[0] in unit_indicators and len(words) > 1:
+                if words[0] in _unit_indicators and len(words) > 1:
                     unit_end = 1
                     if unit_end < len(words) and words[unit_end][0].isdigit():
                         unit_end += 1
@@ -354,11 +355,11 @@ def main():
             valid_df = valid_df.sort_values('source_index')
         
         # Export to CSV
-        valid_df.to_csv(os.path.join(root_dir, 'valid_addresses.csv'), index=False)
+        valid_df.to_csv(os.path.join(_root_dir, 'valid_addresses.csv'), index=False)
         # Only write truly invalid addresses to invalid CSV
         still_invalid = [r for r in invalid_df.to_dict('records') 
                         if r['source_index'] not in valid_df['source_index'].values]
-        pd.DataFrame(still_invalid).to_csv(os.path.join(root_dir, 'invalid_addresses.csv'), index=False)
+        pd.DataFrame(still_invalid).to_csv(os.path.join(_root_dir, 'invalid_addresses.csv'), index=False)
         
         print(f"\nProcessed {len(addresses)} addresses")
         print(f"Valid: {len(valid_df)}")
@@ -366,7 +367,7 @@ def main():
         print(f"Recovered from invalid: {len(recovered_records)}")
         
     except FileNotFoundError:
-        print(f"Error: Could not find CSV file at {csv_path}")
+        print(f"Error: Could not find CSV file at {_csv_path}")
     except Exception as e:
         print(f"Error processing file: {str(e)}")
 
