@@ -2,6 +2,17 @@ import pandas as pd
 from typing import List, Dict, Tuple
 import os
 import re
+import logging
+from datetime import datetime
+
+# Add logging configuration at the top
+log_file = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'address_processing.log')
+logging.basicConfig(
+    filename=log_file,
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
 
 # This assumes your raw .csv file is in root.
 _root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -82,23 +93,51 @@ def validate_and_fix_addresses(valid_addresses: List[Dict]) -> List[Dict]:
         List[Dict]: List of validated and fixed address dictionaries.
     """
     
+    logging.info("Starting address validation and fixes...")
+    fixes_made = 0
+    
     for addr in valid_addresses:
-        # Fix suite/city split
+        original = addr.copy()
+        changes = []
+        
+        # Fix zip code format
+        if addr['zip']:
+            old_zip = addr['zip']
+            addr['zip'] = format_zip(addr['zip'])
+            if old_zip != addr['zip']:
+                changes.append(f"zip: {old_zip} -> {addr['zip']}")
+        
+        # Fix suite/city split in address_line_2
         if addr['address_line_2']:
             words = addr['address_line_2'].upper().split()
             if words[0] in _unit_indicators and len(words) > 1:
+                # Find where unit info ends
                 unit_end = 1
                 if unit_end < len(words) and words[unit_end][0].isdigit():
                     unit_end += 1
+                
                 if unit_end < len(words):
+                    old_addr2 = addr['address_line_2']
+                    old_city = addr['city']
+                    
+                    # Move extra words to city
                     addr['city'] = ' '.join(words[unit_end:])
                     addr['address_line_2'] = ' '.join(words[:unit_end])
+                    
+                    changes.append(f"address_line_2: {old_addr2} -> {addr['address_line_2']}")
+                    changes.append(f"city: {old_city} -> {addr['city']}")
         
-        # Format zip code
-        if addr['zip']:
-            addr['zip'] = format_zip(addr['zip'])
+        # Log changes if any were made
+        if changes:
+            fixes_made += 1
+            logging.info(f"Fixed address {addr['source_index']}:")
+            logging.info(f"Before: {original}")
+            logging.info(f"After: {addr}")
+            logging.info(f"Changes made: {', '.join(changes)}")
     
+    logging.info(f"Validation complete - {fixes_made} addresses modified")
     return valid_addresses
+
 
 def parse_addresses(addresses: List[str]) -> Tuple[List[Dict], List[Dict]]:
     """Parse addresses into components and separate valid and invalid addresses.
@@ -120,7 +159,10 @@ def parse_addresses(addresses: List[str]) -> Tuple[List[Dict], List[Dict]]:
     invalid_addresses = []
     
     for idx, address in enumerate(addresses):
+        logging.info(f"Processing address index {idx}: {address}")
+        
         if not address or not address.strip():
+            logging.warning(f"Empty address at index {idx}")
             invalid_addresses.append({'source_index': idx, 'invalid_address': address})
             continue
             
@@ -128,9 +170,11 @@ def parse_addresses(addresses: List[str]) -> Tuple[List[Dict], List[Dict]]:
             # First replace newlines with commas and clean whitespace
             cleaned = address.replace('"', '').replace('\n', ',')
             cleaned = ' '.join(cleaned.split())
+            logging.debug(f"Cleaned address: {cleaned}")
             
             # Split on commas
             parts = [p.strip() for p in cleaned.split(',')]
+            logging.debug(f"Split parts: {parts}")
             
             if len(parts) >= 2:  # Has at least one comma
                 street = parts[0]
@@ -179,12 +223,15 @@ def parse_addresses(addresses: List[str]) -> Tuple[List[Dict], List[Dict]]:
                     'state': state_zip_parts[0],
                     'zip': state_zip_parts[1]
                 }
+                logging.info(f"Successfully parsed address {idx}: {parsed}")
                 valid_addresses.append(parsed)
                 continue
             
+            logging.warning(f"Could not parse address {idx}: {cleaned}")
             invalid_addresses.append({'source_index': idx, 'invalid_address': cleaned})
             
         except Exception as e:
+            logging.error(f"Error processing address {idx}: {str(e)}")
             invalid_addresses.append({'source_index': idx, 'invalid_address': address})
     
     return valid_addresses, invalid_addresses
@@ -198,6 +245,7 @@ def recover_invalid_addresses(invalid_addresses: List[Dict]) -> Tuple[List[Dict]
     Returns:
         Tuple[List[Dict], List[Dict]]: Tuple containing (recovered_addresses, still_invalid_addresses).
     """
+    logging.info("Attempting to recover invalid addresses...")
     recovered = []
     still_invalid = []
     
@@ -207,35 +255,39 @@ def recover_invalid_addresses(invalid_addresses: List[Dict]) -> Tuple[List[Dict]
             if not addr or not addr.strip():
                 still_invalid.append(invalid)
                 continue
+                
+            # Log recovery attempt
+            logging.info(f"Attempting to recover address: {addr}")
             
-            # Clean and split on spaces
             words = addr.upper().strip().split()
-            
-            # Look for state pattern (2 letters followed by 5-digit zip)
             for i, word in enumerate(words):
                 if (len(word) == 2 and word.isalpha() and 
                     i + 1 < len(words) and words[i+1].isdigit()):
-                    # Found state and zip - work backwards
-                    state = word
-                    zip_code = words[i+1]
-                    city = words[i-1]  # Assume word before state is city
-                    street = ' '.join(words[:i-1])  # Everything before city is street
-                    
-                    recovered.append({
+                    # Found state and zip pattern
+                    recovered_addr = {
                         'source_index': invalid['source_index'],
-                        'address_line_1': street,
+                        'address_line_1': ' '.join(words[:i-1]),
                         'address_line_2': '',
-                        'city': city,
-                        'state': state,
-                        'zip': zip_code
-                    })
+                        'city': words[i-1],
+                        'state': word,
+                        'zip': words[i+1]
+                    }
+                    
+                    logging.info(f"Successfully recovered address {invalid['source_index']}:")
+                    logging.info(f"From: {addr}")
+                    logging.info(f"To: {recovered_addr}")
+                    
+                    recovered.append(recovered_addr)
                     break
             else:
+                logging.warning(f"Could not recover address {invalid['source_index']}: {addr}")
                 still_invalid.append(invalid)
                 
         except Exception as e:
+            logging.error(f"Error recovering address {invalid['source_index']}: {str(e)}")
             still_invalid.append(invalid)
     
+    logging.info(f"Recovery complete - {len(recovered)} addresses recovered")
     return recovered, still_invalid
 
 def process_invalid_addresses(invalid_records: List[Dict]) -> List[Dict]:
@@ -294,12 +346,13 @@ def main():
         - valid_addresses.csv: Successfully parsed addresses
         - invalid_addresses.csv: Addresses that could not be parsed
     """
-    # Get the root directory path
-    
+    logging.info("="*80)
+    logging.info(f"Starting address processing at {datetime.now()}")
     
     try:
         # Read addresses from CSV file
         df = pd.read_csv(_csv_path, dtype={'Location Address': str})
+        logging.info(f"Read {len(df)} addresses from {_csv_path}")
         if 'Location Address' not in df.columns:
             print("Error: CSV file must contain a 'Location Address' column")
             return
@@ -316,32 +369,9 @@ def main():
         # Sort by source index
         valid_df = valid_df.sort_values('source_index')
         
-        # Convert to lists for easier manipulation
-        records = valid_df.to_dict('records')
-        
-        # Apply fixes to records
-        for record in records:
-            if record['address_line_2']:
-                words = record['address_line_2'].upper().split()
-                if words[0] in _unit_indicators and len(words) > 1:
-                    unit_end = 1
-                    if unit_end < len(words) and words[unit_end][0].isdigit():
-                        unit_end += 1
-                    if unit_end < len(words):
-                        # Move everything after unit to city
-                        city_part = ' '.join(words[unit_end:])
-                        unit_part = ' '.join(words[:unit_end])
-                        
-                        # Update record
-                        if not record['city']:  # If city is empty
-                            record['city'] = city_part
-                        record['address_line_2'] = unit_part
-        
-        # Create new DataFrame from fixed records
-        valid_df = pd.DataFrame(records)
-        
-        # Sort again just to be safe
-        valid_df = valid_df.sort_values('source_index')
+        # Apply validation and fixes - THIS IS THE KEY CHANGE
+        valid_records = validate_and_fix_addresses(valid_df.to_dict('records'))
+        valid_df = pd.DataFrame(valid_records)
         
         # Process invalid addresses
         recovered_records = process_invalid_addresses(invalid_df.to_dict('records'))
@@ -361,6 +391,15 @@ def main():
                         if r['source_index'] not in valid_df['source_index'].values]
         pd.DataFrame(still_invalid).to_csv(os.path.join(_root_dir, 'invalid_addresses.csv'), index=False)
         
+        pd.DataFrame(still_invalid).to_csv(os.path.join(_root_dir, 'invalid_addresses.csv'), index=False)
+
+        logging.info(f"Processing complete:")
+        logging.info(f"Total addresses processed: {len(addresses)}")
+        logging.info(f"Valid addresses: {len(valid_df)}")
+        logging.info(f"Invalid addresses: {len(still_invalid)}")
+        logging.info(f"Recovered addresses: {len(recovered_records)}")
+        logging.info("="*80)
+        
         print(f"\nProcessed {len(addresses)} addresses")
         print(f"Valid: {len(valid_df)}")
         print(f"Invalid: {len(still_invalid)}")
@@ -369,6 +408,7 @@ def main():
     except FileNotFoundError:
         print(f"Error: Could not find CSV file at {_csv_path}")
     except Exception as e:
+        logging.error(f"Fatal error: {str(e)}", exc_info=True)
         print(f"Error processing file: {str(e)}")
 
 if __name__ == "__main__":
